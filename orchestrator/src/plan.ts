@@ -79,6 +79,6 @@ export async function buildPlan(request: string, workspace: string, model?: stri
   argv.push("--append-system-prompt", append);
   argv.push(`Decompose this request into tasks for the workspace at ${workspace}:\n\n${request}`);
   const r = await runOmp(argv, { cwd: workspace });
-  if (!r.ok) throw new Error(`planner failed (exit ${r.exitCode}): ${r.stderr.trim() || "no output"}`);
+  if (!r.ok) throw new Error(`planner failed (exit ${r.exitCode}): ${r.errorText || r.stderr.trim() || "no output"}`);
   return parsePlan(r.finalText);
 }

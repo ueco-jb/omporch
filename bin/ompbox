@@ -2,7 +2,7 @@
 set -euo pipefail
 
 OMPBOX_HOME="${OMPBOX_HOME:-$HOME/.ompbox}"
-OMP_VERSION="${OMP_VERSION:-16.0.4}"
+OMP_VERSION="${OMP_VERSION:-18.1.16}"
 BASE_IMAGE="${OMPBOX_BASE_IMAGE:-ompbox/base:latest}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AGENT_BASE_IN_CONTAINER="/home/u/.omp/agent"

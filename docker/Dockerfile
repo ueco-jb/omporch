@@ -2,7 +2,7 @@
 ARG BUN_TAG=1.3.14-debian
 FROM oven/bun:${BUN_TAG}
 
-ARG OMP_VERSION=16.0.4
+ARG OMP_VERSION=18.1.16
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \

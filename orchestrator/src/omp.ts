@@ -1,6 +1,7 @@
 
 export interface OmpRun {
   finalText: string;
+  errorText: string;
   costUSD: number;
   exitCode: number;
   ok: boolean;
@@ -15,6 +16,7 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 interface OmpMessage {
   role?: string;
   text: string;
+  errorText: string;
   costUSD: number;
 }
 
@@ -31,10 +33,11 @@ function toMessage(v: unknown): OmpMessage | undefined {
   if (isRecord(v.usage) && isRecord(v.usage.cost) && typeof v.usage.cost.total === "number") {
     costUSD = v.usage.cost.total;
   }
-  return { role, text, costUSD };
+  const errorText = typeof v.errorMessage === "string" ? v.errorMessage : "";
+  return { role, text, errorText, costUSD };
 }
 
-export function extractResult(events: unknown[]): { finalText: string; costUSD: number } {
+export function extractResult(events: unknown[]): { finalText: string; errorText: string; costUSD: number } {
   let messages: OmpMessage[] = [];
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i];
@@ -54,14 +57,16 @@ export function extractResult(events: unknown[]): { finalText: string; costUSD: 
   let costUSD = 0;
   for (const m of messages) costUSD += m.costUSD;
   let finalText = "";
+  let errorText = "";
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (m?.role === "assistant") {
       finalText = m.text;
+      errorText = m.errorText;
       break;
     }
   }
-  return { finalText: finalText.trim(), costUSD };
+  return { finalText: finalText.trim(), errorText: errorText.trim(), costUSD };
 }
 
 export async function runOmp(
@@ -90,6 +95,6 @@ export async function runOmp(
     } catch {
     }
   }
-  const { finalText, costUSD } = extractResult(events);
-  return { finalText, costUSD, exitCode, ok: exitCode === 0 && finalText.length > 0, stderr, events };
+  const { finalText, errorText, costUSD } = extractResult(events);
+  return { finalText, errorText, costUSD, exitCode, ok: exitCode === 0 && finalText.length > 0 && errorText.length === 0, stderr, events };
 }

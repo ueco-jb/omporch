@@ -6,6 +6,7 @@ import type { Plan } from "../src/types.ts";
 function result(ok: boolean): OmpRun {
   return {
     finalText: ok ? "done" : "",
+    errorText: "",
     costUSD: 0,
     exitCode: ok ? 0 : 1,
     ok,

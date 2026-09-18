@@ -15,7 +15,19 @@ test("extracts the last assistant result", () => {
       ],
     },
   ]);
-  expect(extracted).toEqual({ finalText: "last", costUSD: 3 });
+  expect(extracted).toEqual({ finalText: "last", errorText: "", costUSD: 3 });
+});
+
+test("extracts the last assistant provider error", () => {
+  const extracted = extractResult([
+    {
+      type: "agent_end",
+      messages: [
+        { role: "assistant", content: [], errorMessage: "configured model is unavailable", usage: { cost: { total: 0 } } },
+      ],
+    },
+  ]);
+  expect(extracted).toEqual({ finalText: "", errorText: "configured model is unavailable", costUSD: 0 });
 });
 
 test("rejects malformed planner dependencies", () => {

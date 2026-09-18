@@ -39,12 +39,12 @@ sudo ./setup-root.sh --rshared
 bin/ompbox build
 ```
 
-The default image contains Bun, OMP 16.0.4, Git, common command tools, and the standing directives under `directives/`.
+The default image contains Bun, OMP 18.1.16, Git, common command tools, and the standing directives under `directives/`.
 
 Version overrides:
 
 ```sh
-OMP_VERSION=16.0.4 bin/ompbox build --no-cache
+OMP_VERSION=18.1.16 bin/ompbox build --no-cache
 OMPBOX_BASE_IMAGE=example/image:tag bin/ompbox build
 ```
 

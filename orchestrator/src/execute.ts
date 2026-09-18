@@ -59,7 +59,7 @@ export async function executePlan(plan: Plan, opts: ExecuteOptions): Promise<Tas
         id: t.id,
         title: t.title,
         status: r.ok ? "done" : "failed",
-        summary: r.finalText || r.stderr.trim() || "(no output)",
+        summary: r.finalText || r.errorText || r.stderr.trim() || "(no output)",
         costUSD: r.costUSD,
         container,
       });
