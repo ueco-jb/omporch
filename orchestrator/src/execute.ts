@@ -4,7 +4,7 @@ import { OMPBOX, up, rm } from "./ompbox.ts";
 import type { Plan, Task, TaskResult } from "./types.ts";
 import { validateTasks } from "./validation.ts";
 
-const WORKER_PREAMBLE = `You are an autonomous worker in an isolated sandbox. Do ONLY the assignment below; the workspace is your working directory. Work to completion without asking questions. When done, end your final message with a concise plain text summary: files changed, what you verified, and any blockers.
+const WORKER_PREAMBLE = `You are an autonomous worker in an isolated sandbox. Do ONLY the assignment below; the workspace is your working directory. Work to completion without asking questions. If the workspace contains flake.nix, run project build, test, lint, and generated code commands through nix develop -c so the pinned project toolchain and environment are active. When done, end your final message with a concise plain text summary: files changed, what you verified, and any blockers.
 
 ASSIGNMENT:
 `;

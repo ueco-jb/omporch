@@ -37,11 +37,14 @@ agent_image() {
 }
 
 build_mount_args() {
-  local name="$1" ws state
+  local name="$1" ws state nix_store
   ws="$(grep -E '^WORKSPACE=' "$(env_file "$name")" | cut -d= -f2-)"
   state="$(state_dir "$name")"
+  nix_store="$OMPBOX_HOME/nix"
+  mkdir -p "$nix_store/store" "$nix_store/var/nix"
   MOUNT_ARGS=()
   MOUNT_ARGS+=( -v "$state:$AGENT_BASE_IN_CONTAINER" )
+  MOUNT_ARGS+=( -v "$nix_store:/nix" )
   MOUNT_ARGS+=( -v "$ws:$ws" )
   if [ -f "$(mounts_tsv "$name")" ]; then
     local host cont mode

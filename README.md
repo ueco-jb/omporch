@@ -39,7 +39,7 @@ sudo ./setup-root.sh --rshared
 bin/ompbox build
 ```
 
-The default image contains Bun, OMP 18.1.16, Git, common command tools, and the standing directives under `directives/`.
+The default image contains Bun, OMP 18.1.16, Nix, Rust 1.95.0, Cargo, Git, common command tools, and the standing directives under `directives/`.
 
 Version overrides:
 
@@ -56,9 +56,11 @@ bin/ompbox run myproject
 bin/ompbox sh myproject
 ```
 
-The workspace is mounted at the same absolute host path. Each agent gets its own state directory under `~/.ompbox/agents/<name>/state`.
+The workspace is mounted at the same absolute host path. Each agent gets its own state directory under `~/.ompbox/agents/<name>/state`. All boxes share an isolated Nix store under `~/.ompbox/nix` so downloaded project toolchains and dependencies survive temporary workers.
 
 Agent names must contain lowercase letters, digits, and dashes. The maximum length is 63 characters.
+
+When a workspace contains `flake.nix`, workers run project build, test, lint, and generated code commands through `nix develop -c`. This activates the pinned project tools and environment instead of relying on the base image Rust toolchain.
 
 ## Directory access
 
