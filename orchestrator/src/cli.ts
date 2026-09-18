@@ -124,7 +124,7 @@ async function runChat(args: Args): Promise<void> {
     OMPORCH_EXTRA_DIRS: JSON.stringify(extraDirs),
     ...(args.workerModel ? { OMPORCH_MODEL: args.workerModel } : {}),
   };
-  const tools = "read,grep,glob,bash,lsp,ast_grep,web_search";
+  const tools = "read,grep,glob,bash,lsp,web_search";
   const ompboxHome = process.env.OMPBOX_HOME ?? join(homedir(), ".ompbox");
   const slug = workspace.replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "root";
   const sessionDir = join(ompboxHome, "orch-sessions", slug);
