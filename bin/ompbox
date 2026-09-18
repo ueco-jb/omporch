@@ -1,0 +1,288 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+OMPBOX_HOME="${OMPBOX_HOME:-$HOME/.ompbox}"
+OMP_VERSION="${OMP_VERSION:-16.0.4}"
+BASE_IMAGE="${OMPBOX_BASE_IMAGE:-ompbox/base:latest}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+AGENT_BASE_IN_CONTAINER="/home/u/.omp/agent"
+HOST_OMP_AGENT="${HOST_OMP_AGENT:-$HOME/.omp/agent}"
+
+die()  { printf 'ompbox: %s\n' "$*" >&2; exit 1; }
+log()  { printf 'ompbox: %s\n' "$*" >&2; }
+validate_name() {
+  [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || die "invalid agent name '$1'"
+}
+
+docker() { command docker "$@"; }
+
+require_docker() {
+  command -v docker >/dev/null 2>&1 || die "docker not found on PATH"
+  docker info >/dev/null 2>&1 || die "cannot reach docker daemon (run setup-root.sh, or 'sudo rc-service docker start')"
+}
+
+cname()    { printf 'ompbox-%s' "$1"; }
+adir()     { printf '%s/agents/%s' "$OMPBOX_HOME" "$1"; }
+state_dir(){ printf '%s/state' "$(adir "$1")"; }
+env_file() { printf '%s/agent.env' "$(adir "$1")"; }
+mounts_tsv(){ printf '%s/mounts.tsv' "$(adir "$1")"; }
+state_image(){ printf 'ompbox/agent-%s:state' "$1"; }
+
+exists_container() { docker container inspect "$(cname "$1")" >/dev/null 2>&1; }
+is_running()       { [ "$(docker container inspect -f '{{.State.Running}}' "$(cname "$1")" 2>/dev/null)" = "true" ]; }
+have_image()       { docker image inspect "$1" >/dev/null 2>&1; }
+
+agent_image() {
+  if have_image "$(state_image "$1")"; then printf '%s' "$(state_image "$1")"; else printf '%s' "$BASE_IMAGE"; fi
+}
+
+build_mount_args() {
+  local name="$1" ws state
+  ws="$(grep -E '^WORKSPACE=' "$(env_file "$name")" | cut -d= -f2-)"
+  state="$(state_dir "$name")"
+  MOUNT_ARGS=()
+  MOUNT_ARGS+=( -v "$state:$AGENT_BASE_IN_CONTAINER" )
+  MOUNT_ARGS+=( -v "$ws:$ws" )
+  if [ -f "$(mounts_tsv "$name")" ]; then
+    local host cont mode
+    while IFS=$'\t' read -r host cont mode; do
+      [ -z "${host:-}" ] && continue
+      if [ "$mode" = "ro" ]; then MOUNT_ARGS+=( -v "$host:$cont:ro" ); else MOUNT_ARGS+=( -v "$host:$cont" ); fi
+    done < "$(mounts_tsv "$name")"
+  fi
+}
+
+seed_account_config() {
+  local name="$1" src="$HOST_OMP_AGENT" dst
+  dst="$(state_dir "$name")"
+  [ -d "$src" ] || { log "warning: host omp dir '$src' not found - agent will need 'omp' login"; return; }
+  [ -f "$src/config.yml" ] && cp -f "$src/config.yml" "$dst/config.yml"
+  if [ -f "$src/agent.db" ] || [ -f "$src/models.db" ]; then
+    command -v sqlite3 >/dev/null 2>&1 || die "sqlite3 is required to copy account databases safely"
+  fi
+  local db
+  for db in agent.db models.db; do
+    [ -f "$src/$db" ] || continue
+    rm -f "$dst/$db" "$dst/$db-wal" "$dst/$db-shm"
+    sqlite3 "$src/$db" ".backup '$dst/$db'" || die "failed to copy $db with sqlite3"
+  done
+  log "seeded account config (auth + models) from $src"
+}
+
+recreate() {
+  local name="$1" image="$2" ws
+  ws="$(grep -E '^WORKSPACE=' "$(env_file "$name")" | cut -d= -f2-)"
+  build_mount_args "$name"
+  if exists_container "$name"; then
+    docker rm -f "$(cname "$name")" >/dev/null
+  fi
+  docker run -d --init --restart unless-stopped \
+    --name "$(cname "$name")" \
+    --hostname "$name" \
+    -w "$ws" \
+    "${MOUNT_ARGS[@]}" \
+    "$image" >/dev/null
+  log "agent '$name' running from image '$image'"
+}
+
+cmd_build() {
+  require_docker
+  [ -f "$SCRIPT_DIR/docker/Dockerfile" ] || die "Dockerfile not found at $SCRIPT_DIR/docker/Dockerfile"
+  docker build "$@" \
+    --build-arg "OMP_VERSION=$OMP_VERSION" \
+    -t "ompbox/base:$OMP_VERSION" -t "$BASE_IMAGE" \
+    -f "$SCRIPT_DIR/docker/Dockerfile" \
+    "$SCRIPT_DIR"
+  log "built $BASE_IMAGE (omp $OMP_VERSION)"
+}
+
+cmd_up() {
+  require_docker
+  local name="" ws="" ; local -a extra=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -w|--workspace) ws="$2"; shift 2 ;;
+      -d|--dir)       extra+=( "$2" ); shift 2 ;;
+      -*)             die "up: unknown flag $1" ;;
+      *)              [ -z "$name" ] && name="$1" || die "up: unexpected arg $1"; shift ;;
+    esac
+  done
+  [ -n "$name" ] || die "up: missing <name>"
+  validate_name "$name"
+
+  if exists_container "$name"; then
+    is_running "$name" || { docker start "$(cname "$name")" >/dev/null; log "started '$name'"; }
+    log "agent '$name' is up"
+    return
+  fi
+
+  [ -n "$ws" ] || die "up: new agent needs -w <workspace dir>"
+  ws="$(realpath -e "$ws")" || die "up: workspace '$ws' does not exist"
+  [ -d "$ws" ] || die "up: workspace '$ws' is not a directory"
+  have_image "$BASE_IMAGE" || die "base image missing - run 'ompbox build' first"
+
+  mkdir -p "$(state_dir "$name")"
+  seed_account_config "$name"
+  printf 'WORKSPACE=%s\nCREATED=%s\n' "$ws" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$(env_file "$name")"
+  : > "$(mounts_tsv "$name")"
+  local spec
+  for spec in "${extra[@]:-}"; do [ -n "$spec" ] && add_mount_record "$name" "$spec"; done
+
+  recreate "$name" "$BASE_IMAGE"
+}
+
+add_mount_record() {
+  local name="$1" spec="$2" host cont mode="rw"
+  case "$spec" in *:ro) mode="ro"; spec="${spec%:ro}" ;; esac
+  host="${spec%%:*}"
+  if [ "$host" = "$spec" ]; then cont=""; else cont="${spec#*:}"; fi
+  local rawhost="$host"
+  case "$host" in "~") host="$HOME" ;; "~/"*) host="$HOME/${host#\~/}" ;; esac
+  host="$(realpath -e "$host")" || die "add-dir: '$rawhost' does not exist"
+  if [ -z "$cont" ]; then
+    case "$host" in
+      "$HOME"/*) cont="$host" ;;
+      *)         cont="/mnt/$(basename "$host")" ;;
+    esac
+  fi
+  printf '%s\t%s\t%s\n' "$host" "$cont" "$mode" >> "$(mounts_tsv "$name")"
+  log "mount: $host -> $cont ($mode)"
+}
+
+cmd_add_dir() {
+  require_docker
+  local name="$1"; shift || die "add-dir: missing <name>"
+  exists_container "$name" || die "add-dir: agent '$name' does not exist (run 'ompbox up' first)"
+  local host="$1"; shift || die "add-dir: missing <host path>"
+  local cont="" mode="rw"
+  while [ $# -gt 0 ]; do
+    case "$1" in --ro) mode="ro"; shift ;; *) cont="$1"; shift ;; esac
+  done
+  local spec="$host"; [ -n "$cont" ] && spec="$host:$cont"; [ "$mode" = ro ] && spec="$spec:ro"
+  log "committing current state of '$name'..."
+  docker commit "$(cname "$name")" "$(state_image "$name")" >/dev/null
+  add_mount_record "$name" "$spec"
+  recreate "$name" "$(state_image "$name")"
+}
+
+cmd_rm_dir() {
+  require_docker
+  local name="$1" cont="$2"
+  exists_container "$name" || die "rm-dir: agent '$name' does not exist"
+  [ -f "$(mounts_tsv "$name")" ] || die "rm-dir: no extra mounts recorded"
+  grep -vP "\t${cont}\t" "$(mounts_tsv "$name")" > "$(mounts_tsv "$name").tmp" || true
+  mv "$(mounts_tsv "$name").tmp" "$(mounts_tsv "$name")"
+  docker commit "$(cname "$name")" "$(state_image "$name")" >/dev/null
+  recreate "$name" "$(state_image "$name")"
+  log "unmounted $cont from '$name'"
+}
+
+cmd_run() {
+  require_docker
+  local name="$1"; shift || die "run: missing <name>"
+  [ "${1:-}" = "--" ] && shift
+  exists_container "$name" || die "run: agent '$name' does not exist (run 'ompbox up' first)"
+  is_running "$name" || docker start "$(cname "$name")" >/dev/null
+  local ws; ws="$(grep -E '^WORKSPACE=' "$(env_file "$name")" | cut -d= -f2-)"
+  local tty=-i; [ -t 0 ] && [ -t 1 ] && tty=-it
+  exec docker exec $tty -w "$ws" "$(cname "$name")" omp "$@"
+}
+
+cmd_sh() {
+  require_docker
+  local name="$1"
+  exists_container "$name" || die "sh: agent '$name' does not exist"
+  is_running "$name" || docker start "$(cname "$name")" >/dev/null
+  local ws; ws="$(grep -E '^WORKSPACE=' "$(env_file "$name")" | cut -d= -f2-)"
+  exec docker exec -it -w "$ws" "$(cname "$name")" bash
+}
+
+cmd_stop()  { require_docker; docker stop "$(cname "$1")" >/dev/null && log "stopped '$1'"; }
+cmd_start() { require_docker; docker start "$(cname "$1")" >/dev/null && log "started '$1'"; }
+cmd_logs()  { require_docker; docker logs "$(cname "$1")"; }
+
+cmd_snapshot() {
+  require_docker
+  local name="$1" tag="${2:-$(date -u +%Y%m%d-%H%M%S)}"
+  exists_container "$name" || die "snapshot: agent '$name' does not exist"
+  docker commit "$(cname "$name")" "ompbox/agent-$name:$tag" >/dev/null
+  log "snapshot: ompbox/agent-$name:$tag"
+}
+
+cmd_ls() {
+  require_docker
+  printf '%-16s %-9s %-32s %s\n' NAME STATUS WORKSPACE "EXTRA MOUNTS"
+  local d name status ws nmounts
+  [ -d "$OMPBOX_HOME/agents" ] || return 0
+  for d in "$OMPBOX_HOME"/agents/*/; do
+    [ -d "$d" ] || continue
+    name="$(basename "$d")"
+    status="absent"
+    if exists_container "$name"; then
+      status="$(docker container inspect -f '{{.State.Status}}' "$(cname "$name")")"
+    fi
+    ws="$(grep -E '^WORKSPACE=' "$d/agent.env" 2>/dev/null | cut -d= -f2-)"
+    nmounts=0; [ -f "$d/mounts.tsv" ] && nmounts="$(grep -c . "$d/mounts.tsv" || true)"
+    printf '%-16s %-9s %-32s %s\n' "$name" "$status" "${ws:-?}" "$nmounts"
+  done
+}
+
+cmd_rm() {
+  require_docker
+  local name="$1" purge=0
+  [ "${2:-}" = "--purge" ] && purge=1
+  if exists_container "$name"; then docker rm -f "$(cname "$name")" >/dev/null; fi
+  if [ "$purge" = 1 ]; then
+    have_image "$(state_image "$name")" && docker rmi -f "$(state_image "$name")" >/dev/null 2>&1 || true
+    rm -rf "$(adir "$name")"
+    log "purged agent '$name' (state and images removed)"
+  else
+    log "removed container for '$name' (state kept at $(adir "$name"))"
+  fi
+}
+
+usage() {
+  cat <<'EOF'
+ompbox commands:
+  ompbox build [--no-cache]
+  ompbox up <name> -w <dir> [-d HOST[:CONT][:ro]]...
+  ompbox run <name> [-- <omp args>]
+  ompbox sh <name>
+  ompbox add-dir <name> <host> [cont] [--ro]
+  ompbox rm-dir <name> <cont>
+  ompbox stop <name>
+  ompbox start <name>
+  ompbox snapshot <name> [tag]
+  ompbox ls
+  ompbox rm <name> [--purge]
+  ompbox logs <name>
+EOF
+}
+
+main() {
+  local cmd="${1:-}"; shift || true
+  case "$cmd" in
+    run|sh|add-dir|rm-dir|stop|start|snapshot|rm|logs)
+      [ $# -gt 0 ] || die "$cmd: missing <name>"
+      validate_name "$1"
+      ;;
+  esac
+  case "$cmd" in
+    build)     cmd_build "$@" ;;
+    up)        cmd_up "$@" ;;
+    run)       cmd_run "$@" ;;
+    sh)        cmd_sh "$@" ;;
+    add-dir)   cmd_add_dir "$@" ;;
+    rm-dir)    cmd_rm_dir "$@" ;;
+    stop)      cmd_stop "$@" ;;
+    start)     cmd_start "$@" ;;
+    snapshot)  cmd_snapshot "$@" ;;
+    ls|list)   cmd_ls "$@" ;;
+    rm)        cmd_rm "$@" ;;
+    logs)      cmd_logs "$@" ;;
+    ""|-h|--help|help) usage ;;
+    *)         die "unknown command '$cmd' (try: ompbox help)" ;;
+  esac
+}
+
+main "$@"
