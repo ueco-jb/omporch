@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { mkdir, realpath } from "node:fs/promises";
 import { buildPlan } from "./plan.ts";
 import { executePlan } from "./execute.ts";
@@ -8,9 +8,10 @@ import { synthesize } from "./report.ts";
 import { loadDirectives } from "./directives.ts";
 import { toAscii } from "./util.ts";
 import { resolveExtraDirs } from "./mounts.ts";
+import { listChatSessions, ompSessionArgs, selectChatSession } from "./sessions.ts";
 
 const USAGE = `usage:
-  omporch chat -w <workspace> [--model M] [--worker-model M] [-c N] [--keep-workers] [--new] [--allow-dir DIR]
+  omporch chat -w <workspace> [--model M] [--worker-model M] [-c N] [--keep-workers] [--new | --continue | --resume [ID]] [--allow-dir DIR]
       interactive: talk to the orchestrator and dispatch sandboxed workers
   omporch run "<request>" -w <workspace> [--yes] [-c N] [--model M] [--keep-workers] [--allow-dir DIR]
       single run: plan, approve, run workers, and print a report
@@ -23,7 +24,9 @@ options:
       --model <m>         planner and worker model for run, orchestrator model for chat
       --worker-model <m>  worker model for chat
       --allow-dir <dir>   extra directory mounted as read only, repeatable
-      --new               start a fresh chat session`;
+      --new               start a fresh chat session
+      --continue          continue the session selected by OMP for this terminal
+      --resume [id]       resume a session by id, or browse OMP history without an id`;
 
 const ORCHESTRATOR_ROLE = `You are an ORCHESTRATOR. Your job is to DELEGATE, not to do the work yourself. By default EVERY task, including investigation, analysis, code changes, builds, and tests, is carried out by sandboxed worker agents you spawn with the \`dispatch\` tool. Dispatching is your primary action and your default reflex, not a fallback.
 
@@ -45,7 +48,7 @@ interface Args {
   concurrency: number;
   model?: string;
   workerModel?: string;
-  fresh: boolean;
+  sessionArgs?: string[];
 }
 
 function fail(msg: string): never {
@@ -65,7 +68,11 @@ function parseArgs(argv: string[]): Args {
   let concurrency = 4;
   let model: string | undefined;
   let workerModel: string | undefined;
-  let fresh = false;
+  let sessionArgs: string[] | undefined;
+  const chooseSession = (choice: string[], flag: string): void => {
+    if (sessionArgs !== undefined) fail(`conflicting or repeated chat session flag: ${flag}`);
+    sessionArgs = choice;
+  };
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
     if (a === undefined) continue;
@@ -95,18 +102,34 @@ function parseArgs(argv: string[]): Args {
         workerModel = rest[++i];
         break;
       case "--new":
-        fresh = true;
+        chooseSession([], a);
         break;
+      case "--continue":
+        chooseSession(["--continue"], a);
+        break;
+      case "--resume": {
+        const id = rest[i + 1];
+        if (id && !id.startsWith("-")) i++;
+        chooseSession(id && !id.startsWith("-") ? ["--resume", id] : ["--resume"], a);
+        break;
+      }
       default:
+        if (a.startsWith("--resume=")) {
+          const id = a.slice("--resume=".length);
+          if (!id) fail("--resume= requires a session id");
+          chooseSession(["--resume", id], "--resume");
+          break;
+        }
         if (a.startsWith("-")) fail(`unknown flag ${a}`);
         if (!request) request = a;
         else fail(`unexpected argument ${a}`);
     }
   }
   if (!workspace) fail("missing -w <workspace>");
+  if (cmd !== "chat" && sessionArgs !== undefined) fail("session flags apply only to chat");
   if (cmd === "run" && !request) fail("run: missing <request>");
   if (!Number.isInteger(concurrency) || concurrency < 1) fail("concurrency must be a positive integer");
-  return { cmd, request, workspace, yes, keepWorkers, concurrency, model, workerModel, fresh, extraDirs };
+  return { cmd, request, workspace, yes, keepWorkers, concurrency, model, workerModel, sessionArgs, extraDirs };
 }
 
 async function runChat(args: Args): Promise<void> {
@@ -128,8 +151,19 @@ async function runChat(args: Args): Promise<void> {
   const ompboxHome = process.env.OMPBOX_HOME ?? join(homedir(), ".ompbox");
   const slug = workspace.replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "root";
   const sessionDir = join(ompboxHome, "orch-sessions", slug);
-  const ompArgs = ["--cwd", workspace, "--tools", tools, "--session-dir", sessionDir, "-e", ext, "--append-system-prompt", role];
-  if (!args.fresh) ompArgs.push("--continue");
+  let sessionArgs = args.sessionArgs;
+  while (sessionArgs === undefined) {
+    if (!process.stdin.isTTY || !process.stderr.isTTY) fail("chat session selection requires a TTY; use --new, --continue, --resume ID, or bare --resume");
+    const sessions = await listChatSessions(sessionDir);
+    const choice = await selectChatSession(basename(workspace) || workspace, sessions);
+    if (choice.kind === "quit") return;
+    if (choice.kind === "resume" && !(await listChatSessions(sessionDir)).some((session) => session.id === choice.id)) {
+      console.error("\nomporch: that session is no longer available; choose another session");
+      continue;
+    }
+    sessionArgs = ompSessionArgs(choice);
+  }
+  const ompArgs = ["--cwd", workspace, "--tools", tools, "--session-dir", sessionDir, "-e", ext, "--append-system-prompt", role, ...sessionArgs];
   if (args.model) ompArgs.push("--model", args.model);
   const proc = Bun.spawn(["omp", ...ompArgs], { env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
   process.exit(await proc.exited);

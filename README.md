@@ -108,7 +108,7 @@ bin/omporch chat -w ~/projects/myproject
 The chat session is the orchestrator. It scopes the request and dispatches isolated workers through the `dispatch` tool.
 
 ```text
-omporch chat -w <workspace> [--model M] [--worker-model M] [-c N] [--keep-workers] [--new] [--allow-dir DIR]
+omporch chat -w <workspace> [--model M] [--worker-model M] [-c N] [--keep-workers] [--new | --continue | --resume [ID]] [--allow-dir DIR]
 ```
 
 Behavior:
@@ -119,7 +119,11 @@ Behavior:
 - Worker containers are removed after each task by default.
 - `--keep-workers` retains worker containers for investigation.
 - Cancellation stops active worker commands and removes their containers.
+- Without a session flag, an interactive terminal menu offers a new session, OMP continue behavior, recent sessions from this omporch workspace, the full OMP history browser, and quit. Up and Down move the selection and Enter opens it.
 - `--new` starts a fresh chat session.
+- `--continue` asks OMP to continue the session associated with the current terminal; it is not guaranteed to select the newest session.
+- `--resume ID` and `--resume=ID` resume that session. Bare `--resume` opens the OMP history browser.
+- Explicit session flags bypass the menu. Noninteractive callers must provide one of them.
 
 Extra directories must be approved through `--allow-dir`. omporch resolves each path before dispatch, rejects paths inside the workspace, shows approved paths during batch approval, and mounts them as read only. Models cannot add host mounts.
 
